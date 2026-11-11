@@ -98,6 +98,10 @@ export class AuxCloudPlatform implements DynamicPlatformPlugin {
   public readonly commandRetryCount: number;
   public readonly commandTimeoutMs: number;
   public readonly redactDeviceIdentifiers: boolean;
+
+  public get providerKind(): AuxProvider['kind'] {
+    return this.provider.kind;
+  }
   public readonly enableHomeKit: boolean;
 
   private readonly handlers = new Map<string, AuxCloudPlatformAccessory>();

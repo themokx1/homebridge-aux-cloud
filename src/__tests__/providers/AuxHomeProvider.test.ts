@@ -207,6 +207,24 @@ describe('AuxHomeProvider', () => {
       endpointId: DEVICE_ID,
       params: expect.objectContaining({ pwr: 1, temp: 250 }),
     }));
+    expect(listener.mock.calls[0][0].params).not.toHaveProperty('envtemp');
+  });
+
+  test('updates REST-only ambient readings independently of MQTT setpoints', async () => {
+    const { mqtt, provider, restClient } = setup();
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, envtemp: 213 } })]);
+    await discover(provider, mqtt);
+    const listener = jest.fn();
+    provider.onStateChange(listener);
+    mqtt.emit(POWER_ON_25C);
+    expect(listener.mock.calls[0][0].params).toMatchObject({ temp: 250, envtemp: 213 });
+
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, envtemp: 219 } })]);
+    const [refreshed] = await provider.listDevices();
+    expect(refreshed.params).toMatchObject({ temp: 250, envtemp: 219 });
+
+    mqtt.emit(POWER_OFF_24C);
+    expect(listener.mock.calls[1][0].params).toMatchObject({ temp: 240, envtemp: 219 });
   });
 
   test('rejects a timed-out command without applying its optimistic values', async () => {

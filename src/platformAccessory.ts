@@ -51,7 +51,8 @@ interface AuxCloudAccessoryContext {
 
 const MIN_TARGET_TEMPERATURE_C = 16;
 const MAX_TARGET_TEMPERATURE_C = 30;
-const DEFAULT_TEMPERATURE_C = 24;
+const DEFAULT_TARGET_TEMPERATURE_C = 24;
+const LEGACY_AMBIENT_FALLBACK_C = 24;
 const CURRENT_TEMPERATURE_MIN_C = -40;
 const CURRENT_TEMPERATURE_MAX_C = 60;
 const FAN_ROTATION_STEP = 20;
@@ -264,8 +265,9 @@ export class AuxCloudPlatformAccessory {
     this.service.getCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState)
       .onGet(this.handleCurrentHeaterCoolerStateGet.bind(this));
 
-    const currentTemperatureMin = celsiusToDisplay(CURRENT_TEMPERATURE_MIN_C, this.temperatureUnit);
-    const currentTemperatureMax = celsiusToDisplay(CURRENT_TEMPERATURE_MAX_C, this.temperatureUnit);
+    const currentTemperatureUnit = this.platform.providerKind === 'aux-home' ? 'C' : this.temperatureUnit;
+    const currentTemperatureMin = celsiusToDisplay(CURRENT_TEMPERATURE_MIN_C, currentTemperatureUnit);
+    const currentTemperatureMax = celsiusToDisplay(CURRENT_TEMPERATURE_MAX_C, currentTemperatureUnit);
 
     this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
       .setProps({
@@ -273,7 +275,13 @@ export class AuxCloudPlatformAccessory {
         maxValue: Math.max(currentTemperatureMin, currentTemperatureMax),
         minStep: 0.1,
       })
-      .onGet(this.handleCurrentTemperatureGet.bind(this));
+      .onGet(() => {
+        const temperature = this.getCurrentTemperature();
+        if (temperature instanceof Error) {
+          throw temperature;
+        }
+        return temperature;
+      });
 
     this.service.getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature)
       .setProps({
@@ -554,16 +562,19 @@ export class AuxCloudPlatformAccessory {
     }
   }
 
-  private handleCurrentTemperatureGet(): CharacteristicValue {
+  private getCurrentTemperature(): number | Error {
     const celsius = this.getCelsiusParam(AC_TEMPERATURE_AMBIENT);
-    const valueC = celsius ?? DEFAULT_TEMPERATURE_C;
-
-    if (this.temperatureUnit === 'F') {
-      const fahrenheit = (valueC * 9) / 5 + 32;
-      return Math.round(fahrenheit * 10) / 10;
+    if (this.platform.providerKind === 'aux-home') {
+      if (celsius === undefined || !Number.isFinite(celsius)
+        || celsius < CURRENT_TEMPERATURE_MIN_C || celsius > CURRENT_TEMPERATURE_MAX_C) {
+        const { HapStatusError, HAPStatus } = this.platform.api.hap;
+        return new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      }
+      // HAP CurrentTemperature is expressed in Celsius, regardless of display units.
+      return roundToOneDecimal(celsius);
     }
 
-    return Math.round(valueC * 10) / 10;
+    return roundToOneDecimal(celsiusToDisplay(celsius ?? LEGACY_AMBIENT_FALLBACK_C, this.temperatureUnit));
   }
 
   private async handleTargetTemperatureSet(value: CharacteristicValue): Promise<void> {
@@ -602,7 +613,7 @@ export class AuxCloudPlatformAccessory {
 
   private handleTargetTemperatureGet(): CharacteristicValue {
     const celsius = this.getCelsiusParam(AC_TEMPERATURE_TARGET);
-    const display = celsiusToDisplay(celsius ?? DEFAULT_TEMPERATURE_C, this.temperatureUnit);
+    const display = celsiusToDisplay(celsius ?? DEFAULT_TARGET_TEMPERATURE_C, this.temperatureUnit);
     return this.clampDisplayTemperature(display);
   }
 
@@ -1079,10 +1090,8 @@ export class AuxCloudPlatformAccessory {
       this.platform.Characteristic.CurrentHeaterCoolerState,
       this.handleCurrentHeaterCoolerStateGet(),
     );
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.CurrentTemperature,
-      this.handleCurrentTemperatureGet(),
-    );
+    this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+      .updateValue(this.getCurrentTemperature());
     this.service.updateCharacteristic(
       this.platform.Characteristic.HeatingThresholdTemperature,
       this.handleTargetTemperatureGet(),

@@ -333,7 +333,8 @@ export class AuxHomeProvider implements AuxProvider {
     };
     this.devices.set(message.deviceId, updated);
     this.pushedStates.set(message.deviceId, {
-      params: { ...updated.params },
+      // Only MQTT fields can override later REST snapshots.
+      params: { ...this.pushedStates.get(message.deviceId)?.params, ...incoming },
       lastUpdated: updated.lastUpdated,
     });
 

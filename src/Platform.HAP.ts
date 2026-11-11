@@ -58,6 +58,10 @@ export class AuxCloudHAPPlatform implements DynamicPlatformPlugin, IAuxCloudPlat
   public readonly redactDeviceIdentifiers: boolean;
   public readonly enableHomeKit: boolean;
 
+  public get providerKind(): AuxProvider['kind'] {
+    return this.provider.kind;
+  }
+
   private readonly handlers = new Map<string, AuxCloudPlatformAccessory>();
 
   private readonly devicesById = new Map<string, AuxDevice>();
