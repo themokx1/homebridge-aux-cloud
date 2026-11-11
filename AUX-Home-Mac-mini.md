@@ -36,6 +36,8 @@ scp homebridge-aux-cloud-0.0.14-beta.1.ambient-{fix,diagnostics}.tgz macmini@MAC
 
 A parancsok a meglévő `hb-service` telepítést használják. Ha a szolgáltatást más módszerrel indítod, a saját stop/start parancsaiddal végezd a leállítást és az indítást. A mentési könyvtár létrehozása meglévő azonos nevű mentés esetén megáll.
 
+SSH-n vagy a Mac mini saját Terminal alkalmazásában illeszd be a teljes blokkot. A Homebridge webes terminál kapcsolata megszakadhat a szolgáltatás leállításakor. Ha a GitHub-ágból készített csomagot használod, a `variant=ambient-diagnostics` sort cseréld `variant=ambient-fix` értékre.
+
 ```sh
 (
   set -eu
@@ -46,9 +48,11 @@ A parancsok a meglévő `hb-service` telepítést használják. Ha a szolgáltat
   plugin="$(npm root -g)/homebridge-aux-cloud"
   backup="$HOME/homebridge-aux-ambient-rollback"
   variant=ambient-diagnostics
-  # A GitHub-branchből készített, naplózás nélküli csomaghoz: variant=ambient-fix
   tgz="$HOME/Downloads/homebridge-aux-cloud-0.0.14-beta.1.$variant.tgz"
-  test -f "$tgz"
+  if [ ! -f "$tgz" ]; then
+    printf 'Package not found: %s\n' "$tgz" >&2
+    exit 1
+  fi
   test "$(node -p 'require(process.argv[1]).version' "$plugin/package.json")" = 0.0.14-beta.1
   mkdir -m 700 "$backup"
   ditto "$plugin" "$backup/homebridge-aux-cloud"
