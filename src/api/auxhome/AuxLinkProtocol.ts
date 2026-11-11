@@ -10,6 +10,17 @@ const MQTT_ENVELOPE_MAGIC = 0xa5a5;
 const MQTT_ENVELOPE_OVERHEAD = 10;
 const MQTT_PLAIN_COMMAND = 0x000b;
 
+/** Decode the indoor sensor from the 35-byte REST status.running frame. */
+export function parseAuxLinkRunningTemperature(running: unknown): number | undefined {
+  if (typeof running !== 'string' || !/^bb000700[0-9a-f]{62}$/i.test(running.trim())) {
+    return undefined;
+  }
+
+  // The sensor byte is Celsius with a +32 offset. AUX params use tenths of Celsius.
+  const celsius = Number.parseInt(running.trim().slice(30, 32), 16) - 32;
+  return celsius <= 60 ? celsius * 10 : undefined;
+}
+
 function auxSocketChecksum(payload: Buffer): number {
   let checksum = 0xffff;
   for (const byte of payload) {

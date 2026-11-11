@@ -10,8 +10,10 @@ import type { AuxHomeDeviceRecord, AuxHomeSession } from '../auxhome/AuxHomeType
 import {
   auxLinkStateToParams,
   buildAuxLinkCommandPayload,
+  parseAuxLinkRunningTemperature,
   parseAuxLinkStatePayload,
 } from '../auxhome/AuxLinkProtocol';
+import { AC_TEMPERATURE_AMBIENT } from '../constants';
 import {
   AuxProviderCommandSupersededError,
   type AuxProvider,
@@ -351,6 +353,12 @@ export class AuxHomeProvider implements AuxProvider {
   }
 
   private normalizeDevice(record: AuxHomeDeviceRecord): AuxDevice {
+    const params = this.numericParams(record.status);
+    const ambient = parseAuxLinkRunningTemperature(record.status?.running);
+    if (ambient !== undefined && !Number.isFinite(params[AC_TEMPERATURE_AMBIENT])) {
+      params[AC_TEMPERATURE_AMBIENT] = ambient;
+    }
+
     return {
       endpointId: record.did,
       friendlyName: record.alias || `AUX Home ${record.did.slice(-4)}`,
@@ -359,7 +367,7 @@ export class AuxHomeProvider implements AuxProvider {
       devicetypeFlag: 0,
       cookie: '',
       mac: record.mac?.toLowerCase(),
-      params: this.numericParams(record.status),
+      params,
       state: record.online ? 1 : 0,
       lastUpdated: this.now().toISOString(),
     };

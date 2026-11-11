@@ -1,5 +1,9 @@
 # AUX Home szobahőmérséklet
 
+## Delta 3 kiolvasás
+
+A `0.0.14-beta.1.ambient-delta3` csomag a 35 bájtos AUX Home REST `status.running` keretből olvassa ki a mért értéket. A Homebridge meglévő konfigurációjával és child bridge-ével használható. A 4. lépésben a csomag nevét és az elvárt verziót cseréld `ambient-delta3` végződésűre. Ha a csomagot SCP-vel közvetlenül a Mac mini saját könyvtárába másoltad, a `tgz` útvonalból hagyd el a `Downloads/` részt. Az eredeti mentésből az 5. lépéssel állítható vissza a korábbi plugin.
+
 A két csomag az upstream `beta` `8f44427c72badb061c441def5a56ff9f61478edf` commitjára épül. A diagnosztikai csomag ugyanazt a javítást tartalmazza, plusz szűrt REST- és MQTT-naplózást. A csomag neve és a Homebridge-regisztráció az eredeti pluginé.
 
 A hibát a `CurrentTemperature` 24 °C-os alapértéke okozta, amikor az `envtemp` hiányzott. Az ismert AUXLink-állapotkeret célhőmérsékletet ad (`temp`), a REST-provider pedig a `status` numerikus mezőit veszi át. Az AC Freedom külön adatútja az `envtemp` értékét tized Celsius-fokban adja át. Az AUX Home élő REST-mezőinek neve és skálázása még ellenőrzésre vár.
@@ -131,6 +135,6 @@ Az Apple Home egy karakterisztikahiba után az egész klímát „Nem válaszol�
 
 **Title** Fix fabricated AUX Home ambient temperature in HomeKit
 
-> When AUX Home supplies a setpoint without an ambient reading, HomeKit's CurrentTemperature fell back to 24 °C. Report a HAP communication error for the unavailable characteristic and use the existing tenths-of-a-degree Celsius contract for valid ambient readings. Cache MQTT-derived parameters separately so setpoint pushes cannot mask a later REST-only reading. Preserve AC Freedom's existing behavior.
+> Decode the measured indoor temperature from AUX Home's 35-byte REST running frame and pass it to HomeKit in Celsius. Cache MQTT-derived parameters separately so setpoint pushes cannot mask a later REST reading. Report a HAP communication error when the ambient characteristic is unavailable. Preserve AC Freedom's existing behavior.
 >
-> Tested with 123 automated tests, lint and a TypeScript build. HAP tests exercise read and update paths, target/ambient separation and an independent power write. Live AUX Home and Apple Home verification is pending.
+> Tested with 123 automated tests, lint and a TypeScript build. Live Delta 3 diagnostics produced 19, 21, 22 and 23 °C from the running frames. The updated Apple Home display still needs live verification.

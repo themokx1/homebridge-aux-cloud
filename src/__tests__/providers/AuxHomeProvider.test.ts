@@ -210,21 +210,35 @@ describe('AuxHomeProvider', () => {
     expect(listener.mock.calls[0][0].params).not.toHaveProperty('envtemp');
   });
 
-  test('updates REST-only ambient readings independently of MQTT setpoints', async () => {
+  test('updates decoded REST ambient readings independently of MQTT setpoints', async () => {
     const { mqtt, provider, restClient } = setup();
-    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, envtemp: 213 } })]);
-    await discover(provider, mqtt);
+    const running = (celsius: number) => 'bb000700' + '00'.repeat(11)
+      + (celsius + 32).toString(16).padStart(2, '0') + '00'.repeat(19);
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, running: running(22) } })]);
+    const [device] = await discover(provider, mqtt);
+    expect(device.params).toMatchObject({ temp: 240, envtemp: 220 });
+
     const listener = jest.fn();
     provider.onStateChange(listener);
     mqtt.emit(POWER_ON_25C);
-    expect(listener.mock.calls[0][0].params).toMatchObject({ temp: 250, envtemp: 213 });
+    expect(listener.mock.calls[0][0].params).toMatchObject({ temp: 250, envtemp: 220 });
 
-    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, envtemp: 219 } })]);
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 240, running: running(19) } })]);
     const [refreshed] = await provider.listDevices();
-    expect(refreshed.params).toMatchObject({ temp: 250, envtemp: 219 });
+    expect(refreshed.params).toMatchObject({ temp: 250, envtemp: 190 });
 
     mqtt.emit(POWER_OFF_24C);
-    expect(listener.mock.calls[1][0].params).toMatchObject({ temp: 240, envtemp: 219 });
+    expect(listener.mock.calls[1][0].params).toMatchObject({ temp: 240, envtemp: 190 });
+
+    for (const invalid of ['bb000700', 'ff' + running(19).slice(2), running(90), running(19).slice(0, -2) + 'zz']) {
+      restClient.listDevices.mockResolvedValue([deviceRecord({ status: { running: invalid } })]);
+      const [withoutReading] = await provider.listDevices();
+      expect(withoutReading.params).not.toHaveProperty('envtemp');
+    }
+
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { running: running(19), envtemp: 193 } })]);
+    const [explicitReading] = await provider.listDevices();
+    expect(explicitReading.params.envtemp).toBe(193);
   });
 
   test('rejects a timed-out command without applying its optimistic values', async () => {
