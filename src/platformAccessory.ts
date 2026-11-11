@@ -336,7 +336,7 @@ export class AuxCloudPlatformAccessory {
         ?? this.accessory.getServiceById(this.platform.Service.Switch, 'fanAuto')
         ?? this.accessory.addService(this.platform.Service.Switch, 'Auto Fan', 'fanAuto');
 
-    service.updateCharacteristic(this.platform.Characteristic.Name, 'Auto Fan');
+    this.setSwitchName(service, 'Auto Fan');
     service.getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.handleFanAutoSet.bind(this))
       .onGet(() => this.handleFanAutoGet());
@@ -373,7 +373,7 @@ export class AuxCloudPlatformAccessory {
           ?? this.accessory.getServiceById(this.platform.Service.Switch, feature)
           ?? this.accessory.addService(this.platform.Service.Switch, definition.label, feature);
 
-        service.updateCharacteristic(this.platform.Characteristic.Name, definition.label);
+        this.setSwitchName(service, definition.label);
         service.getCharacteristic(this.platform.Characteristic.On)
           .onSet(async (value) => {
             await this.handleFeatureSwitchSet(feature, Boolean(value));
@@ -400,7 +400,7 @@ export class AuxCloudPlatformAccessory {
           ?? this.accessory.getServiceById(this.platform.Service.Switch, definition.key)
           ?? this.accessory.addService(this.platform.Service.Switch, definition.label, definition.key);
 
-      existing.updateCharacteristic(this.platform.Characteristic.Name, definition.label);
+      this.setSwitchName(existing, definition.label);
       existing.getCharacteristic(this.platform.Characteristic.On)
         .onSet(async (value) => {
           await this.handleModeSwitchSet(definition.key, Boolean(value), definition.auxMode);
@@ -408,6 +408,14 @@ export class AuxCloudPlatformAccessory {
         .onGet(() => this.getAuxMode() === definition.auxMode);
 
       this.modeSwitchServices.set(definition.key, existing);
+    }
+  }
+
+  private setSwitchName(service: Service, label: string): void {
+    const { Name, ConfiguredName } = this.platform.Characteristic;
+    service.updateCharacteristic(Name, label);
+    if (!service.testCharacteristic(ConfiguredName)) {
+      service.setCharacteristic(ConfiguredName, label);
     }
   }
 
