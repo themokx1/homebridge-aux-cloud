@@ -116,6 +116,25 @@ Account automations are intentionally deferred: iFavor, Pet Hosting, sleep curve
 
 MQTT is the primary source of live state. Changes from the physical remote are pushed into the HomeKit and Matter accessories without waiting for the normal polling interval. If a pushed update is missed or MQTT is reconnecting, the normal periodic refresh continues as a fallback reconciliation path. A disconnected MQTT session automatically retries with bounded backoff and resubscribes to the account's discovered devices after reconnecting.
 
+The plugin requests the current state after MQTT connects. During an outage, a REST snapshot can update fields from the previous MQTT connection. HomeKit retains the last measured indoor temperature for up to two poll intervals after the last observation.
+
+#### Optional HomeKit controls per device
+
+Add an entry to `devices` with the unit's MAC address or AUX Home `endpointId` to use these options. A mapping can override the display of one unit at a time.
+
+```json
+{
+  "mac": "aa:bb:cc:dd:ee:ff",
+  "homeKitService": "thermostat",
+  "ambientTemperatureSensor": true,
+  "homeKitSwitches": ["fanAuto", "fanQuiet", "verticalSwing", "vertical3", "screenDisplay"]
+}
+```
+
+- `homeKitService` defaults to `heaterCooler`. The optional `thermostat` uses one target temperature and uses separate switches for fan and swing controls. Changing the service type can affect HomeKit scenes and automations that refer to the old service.
+- `ambientTemperatureSensor` adds a separate Room Temperature service. In Apple Home, use the accessory's separate-tile setting if you want to display its services individually.
+- `homeKitSwitches` overrides the switches for the matched unit. An empty list hides them. Supported options include `fanAuto`, `dry`, `fan`, the entries listed under `featureSwitches`, and the AUX Home controls `fanTurbo`, `fanQuiet`, `horizontalSwing`, `verticalSwing`, and `vertical1` through `vertical5`. Switching off a selected Turbo or Quiet mode returns the fan to Auto. Switching off a selected fixed vertical position resumes vertical swing.
+
 #### Troubleshooting AUX Home safely
 
 - Confirm `provider` is `aux-home`, `region` is `eu`, and both `username` and `password` are set in Homebridge.

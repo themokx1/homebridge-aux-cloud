@@ -21,6 +21,10 @@ export const ALLOWED_FEATURE_SWITCHES: FeatureSwitchKey[] = [
   'sleep',
 ];
 
+export type HomeKitSwitchKey = FeatureSwitchKey | 'fanAuto' | 'dry' | 'fan'
+  | 'fanTurbo' | 'fanQuiet' | 'horizontalSwing' | 'verticalSwing'
+  | 'vertical1' | 'vertical2' | 'vertical3' | 'vertical4' | 'vertical5';
+
 export interface AuxCloudPlatformDependencies {
   providerFactory?: (options: CreateProviderOptions) => AuxProvider;
   closeProviderOnUnload?: boolean;
@@ -59,6 +63,9 @@ export interface AuxCloudPlatformConfig extends PlatformConfig {
     name?: string;
     controlStrategy?: 'local' | 'cloud';
     bridge?: 'HAP' | 'Matter';
+    homeKitSwitches?: HomeKitSwitchKey[];
+    ambientTemperatureSensor?: boolean;
+    homeKitService?: 'heaterCooler' | 'thermostat';
   }>;
 }
 

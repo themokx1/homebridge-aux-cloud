@@ -34,7 +34,7 @@ export class AuxCloudHAPPlatform implements DynamicPlatformPlugin, IAuxCloudPlat
     return Boolean(context.device?.endpointId);
   }
 
-  private readonly config: AuxCloudPlatformConfig;
+  public readonly config: AuxCloudPlatformConfig;
 
   private readonly provider: AuxProvider;
   private readonly closeProviderOnUnload: boolean;

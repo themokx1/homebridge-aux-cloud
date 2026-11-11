@@ -13,7 +13,7 @@ import {
   parseAuxLinkRunningTemperature,
   parseAuxLinkStatePayload,
 } from '../auxhome/AuxLinkProtocol';
-import { AC_TEMPERATURE_AMBIENT } from '../constants';
+import { AC_TEMPERATURE_AMBIENT, AC_TEMPERATURE_TARGET } from '../constants';
 import {
   AuxProviderCommandSupersededError,
   type AuxProvider,
@@ -133,6 +133,11 @@ export class AuxHomeProvider implements AuxProvider {
       rawRecords = await this.restClient.listDevices();
     }
     const records = rawRecords.filter((record) => this.isIncluded(record.did, options));
+    const mqttWasConnected = this.mqtt.isConnected();
+    const previousIds = new Set(this.deviceRecords.keys());
+    if (!mqttWasConnected) {
+      this.pushedStates.clear();
+    }
     this.deviceRecords.clear();
     this.devices.clear();
 
@@ -156,6 +161,12 @@ export class AuxHomeProvider implements AuxProvider {
     }
 
     this.mqtt.connect(records.map(({ did }) => ({ did })));
+    if (mqttWasConnected) {
+      const needsState = devices.filter(({ endpointId, params }) =>
+        !previousIds.has(endpointId) || !Number.isFinite(params[AC_TEMPERATURE_TARGET]),
+      );
+      this.requestLiveState(this.mqtt, needsState.map(({ endpointId }) => endpointId));
+    }
     return devices;
   }
 
@@ -284,6 +295,19 @@ export class AuxHomeProvider implements AuxProvider {
     this.recoveryConnectedResolve?.();
     this.recoveryConnectedResolve = undefined;
     this.recoveryConnectedReject = undefined;
+    this.pushedStates.clear();
+    this.requestLiveState(mqtt, this.deviceRecords.keys());
+  }
+
+  private requestLiveState(mqtt: AuxHomeMqttConnection, deviceIds: Iterable<string>): void {
+    for (const deviceId of deviceIds) {
+      try {
+        mqtt.publish(deviceId, AUX_LINK_STATE_QUERY);
+      } catch {
+        // Discovery and REST reconciliation can continue if MQTT drops mid-query.
+        break;
+      }
+    }
   }
 
   private handleAuthenticationFailure(mqtt: AuxHomeMqttConnection): void {
@@ -359,6 +383,7 @@ export class AuxHomeProvider implements AuxProvider {
       params[AC_TEMPERATURE_AMBIENT] = ambient;
     }
 
+    const observedAt = this.now();
     return {
       endpointId: record.did,
       friendlyName: record.alias || `AUX Home ${record.did.slice(-4)}`,
@@ -369,7 +394,8 @@ export class AuxHomeProvider implements AuxProvider {
       mac: record.mac?.toLowerCase(),
       params,
       state: record.online ? 1 : 0,
-      lastUpdated: this.now().toISOString(),
+      lastUpdated: observedAt.toISOString(),
+      ambientObservedAt: Number.isFinite(params[AC_TEMPERATURE_AMBIENT]) ? observedAt.getTime() : null,
     };
   }
 

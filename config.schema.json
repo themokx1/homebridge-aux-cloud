@@ -205,6 +205,30 @@
                             ],
                             "description": "Force local-only or cloud-only control for this device (overrides global controlStrategy). Devices without endpointId are always local."
                         },
+                        "homeKitService": {
+                            "title": "HomeKit Control Style",
+                            "type": "string",
+                            "enum": ["heaterCooler", "thermostat"],
+                            "description": "Thermostat shows a single target temperature, including in Auto mode."
+                        },
+                        "ambientTemperatureSensor": {
+                            "title": "Separate Room Temperature Sensor",
+                            "type": "boolean",
+                            "description": "Expose the measured room temperature as a separate HomeKit service."
+                        },
+                        "homeKitSwitches": {
+                            "title": "HomeKit Switches for This Device",
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "fanAuto", "dry", "fan", "screenDisplay", "mildewProof", "clean", "health", "eco", "sleep",
+                                    "fanTurbo", "fanQuiet", "horizontalSwing", "verticalSwing",
+                                    "vertical1", "vertical2", "vertical3", "vertical4", "vertical5"
+                                ]
+                            },
+                            "description": "Override the default extra switches. An empty list hides all extra switches."
+                        },
                         "bridge": {
                             "title": "Register in",
                             "type": "string",

@@ -1,5 +1,37 @@
 # AUX Home szobahőmérséklet
 
+## Telepítés a már működő Delta 3 javításra
+
+Az `aux-home-controls` csomag automatikusan bekapcsolja az MQTT indulási és újracsatlakozási állapotlekérdezést. Az egy célértékes termosztát, a külön szobahőmérő és a kapcsolók listája klímánként állítható be a `devices` alatt. A [README AUX Home szakasza](README.md#optional-homekit-controls-per-device) tartalmaz egy mintát. Elsőre egyetlen klímán próbáld ki a termosztátnézetet. A szolgáltatástípus cseréje érintheti az adott klímához tartozó HomeKit-jeleneteket és automatizálásokat.
+
+**FEJLESZTŐGÉPEN**, a fork gyökeréből másold a csomagot a Mac mini saját könyvtárába. Cseréld ki a gépnevet a saját Mac mini gépnevére vagy IP-címére.
+
+```sh
+scp homebridge-aux-cloud-0.0.14-beta.1.aux-home-controls.tgz macmini@MAC_MINI_HOST:
+```
+
+**MAC MININ**, SSH-ablakban. A parancs a már működő plugint elmenti, majd telepíti az új csomagot és ellenőrzi a verzióját.
+
+```sh
+(
+  set -eu
+  export PATH="$HOME/.nvm/versions/node/v22.18.0/bin:$PATH"
+  tgz="$HOME/homebridge-aux-cloud-0.0.14-beta.1.aux-home-controls.tgz"
+  tar -tzf "$tgz" >/dev/null
+  plugin="$(npm root -g)/homebridge-aux-cloud"
+  service="$(command -v hb-service)"
+  backup="$(mktemp -d "$HOME/homebridge-aux-controls-rollback.XXXXXX")"
+  ditto "$plugin" "$backup/homebridge-aux-cloud"
+  printf 'Plugin backup: %s\n' "$backup"
+  sudo env "PATH=$PATH" "$service" stop
+  npm install -g --omit=peer --ignore-scripts "$tgz"
+  test "$(node -p 'require(process.argv[1]).version' "$plugin/package.json")" = 0.0.14-beta.1.aux-home-controls
+  sudo env "PATH=$PATH" "$service" start
+)
+```
+
+Visszaállításhoz a lenti 5. lépésben a `backup` változóba az itt kiírt mentési útvonalat tedd, a verzióellenőrzésbe pedig a mentett csomag verzióját. Ha időközben módosítottad a klíma HomeKit-megjelenítését, állítsd vissza a korábbi Homebridge-konfigurációt is.
+
 ## Delta 3 kiolvasás
 
 A `0.0.14-beta.1.ambient-delta3` csomag a 35 bájtos AUX Home REST `status.running` keretből olvassa ki a mért értéket. A Homebridge meglévő konfigurációjával és child bridge-ével használható. A 4. lépésben a csomag nevét és az elvárt verziót cseréld `ambient-delta3` végződésűre. Ha a csomagot SCP-vel közvetlenül a Mac mini saját könyvtárába másoltad, a `tgz` útvonalból hagyd el a `Downloads/` részt. Az eredeti mentésből az 5. lépéssel állítható vissza a korábbi plugin.

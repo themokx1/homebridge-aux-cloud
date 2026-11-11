@@ -1,10 +1,10 @@
 import { HomebridgeAPI } from 'homebridge/lib/api';
 import type { AuxDevice } from '../api/AuxCloudClient';
-import { AC_POWER, AC_TEMPERATURE_AMBIENT, AC_TEMPERATURE_TARGET } from '../api/constants';
+import { AC_FAN_SPEED, AC_SWING_VERTICAL, AuxFanSpeed, AC_POWER, AC_TEMPERATURE_AMBIENT, AC_TEMPERATURE_TARGET } from '../api/constants';
 import type { AuxCloudPlatform } from '../platform';
 import { AuxCloudPlatformAccessory } from '../platformAccessory';
 
-function setup(providerKind = 'aux-home', temperatureUnit = 'C') {
+function setup(providerKind = 'aux-home', temperatureUnit = 'C', config = {}) {
   const api = new HomebridgeAPI();
   const { Characteristic, HAPStatus, Service, uuid } = api.hap;
   const accessory = new api.platformAccessory('Test AC', uuid.generate('test-ac'));
@@ -17,7 +17,7 @@ function setup(providerKind = 'aux-home', temperatureUnit = 'C') {
     service.getCharacteristic(Characteristic.CoolingThresholdTemperature).setProps({ maxValue: 100 }).updateValue(75);
   }
   const platform = {
-    api, Characteristic, Service, providerKind, temperatureUnit,
+    api, Characteristic, Service, providerKind, temperatureUnit, config,
     temperatureStep: 0.5,
     featureSwitches: new Set(),
     updateCachedDevice: jest.fn(),
@@ -36,6 +36,12 @@ function setup(providerKind = 'aux-home', temperatureUnit = 'C') {
 
   return {
     update,
+    thermostat: () => accessory.getService(Service.Thermostat),
+    heaterCooler: () => accessory.getService(Service.HeaterCooler),
+    sensor: () => accessory.getServiceById(Service.TemperatureSensor, 'ambientTemperature'),
+    modeSwitch: () => accessory.getServiceById(Service.Switch, 'dry'),
+    getSwitch: (key: string) => accessory.getServiceById(Service.Switch, key)?.getCharacteristic(Characteristic.On),
+    Characteristic,
     current: service.getCharacteristic(Characteristic.CurrentTemperature),
     target: service.getCharacteristic(Characteristic.HeatingThresholdTemperature),
     active: service.getCharacteristic(Characteristic.Active),
@@ -81,8 +87,55 @@ describe('HAP ambient temperature', () => {
     await expect(target.handleGetRequest()).resolves.toBe(25);
 
     update({ [AC_TEMPERATURE_TARGET]: 250 });
-    await expect(current.handleGetRequest()).rejects.toBe(communicationFailure);
+    await expect(current.handleGetRequest()).resolves.toBe(0);
     await expect(target.handleGetRequest()).resolves.toBe(25);
+  });
+
+  test('uses the last actual AUX Home reading for two polling intervals', async () => {
+    jest.useFakeTimers();
+    try {
+      const { communicationFailure, current, update } = setup('aux-home', 'C', { pollInterval: 60 });
+      update({ [AC_TEMPERATURE_AMBIENT]: 213 });
+      update({});
+      await expect(current.handleGetRequest()).resolves.toBeCloseTo(21.3);
+      jest.advanceTimersByTime(120_001);
+      await expect(current.handleGetRequest()).rejects.toBe(communicationFailure);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('adds an independent measured Celsius sensor and honors per-device switch settings', async () => {
+    const { sensor, modeSwitch, Characteristic, update } = setup('aux-home', 'F', {
+      devices: [{ endpointId: 'test-ac', ambientTemperatureSensor: true, homeKitSwitches: [] }],
+    });
+    update({ [AC_TEMPERATURE_AMBIENT]: 223 });
+    await expect(sensor()?.getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()).resolves.toBeCloseTo(22.3);
+    expect(modeSwitch()).toBeUndefined();
+  });
+
+  test('offers a single target characteristic on the opt-in thermostat service', async () => {
+    const { thermostat, heaterCooler, Characteristic, update } = setup('aux-home', 'C', {
+      devices: [{ endpointId: 'test-ac', homeKitService: 'thermostat' }],
+    });
+    update({ [AC_POWER]: 1, [AC_TEMPERATURE_AMBIENT]: 210, [AC_TEMPERATURE_TARGET]: 240 });
+    expect(heaterCooler()).toBeUndefined();
+    const service = thermostat()!;
+    expect(service.testCharacteristic(Characteristic.HeatingThresholdTemperature)).toBe(false);
+    expect(service.testCharacteristic(Characteristic.CoolingThresholdTemperature)).toBe(false);
+    await expect(service.getCharacteristic(Characteristic.TargetTemperature).handleGetRequest()).resolves.toBe(24);
+    await expect(service.getCharacteristic(Characteristic.CurrentTemperature).handleGetRequest()).resolves.toBe(21);
+  });
+
+  test('exposes opt-in fan and vane controls using AUX Home parameter values', async () => {
+    const { getSwitch, startDeviceCommand, update } = setup('aux-home', 'C', {
+      devices: [{ endpointId: 'test-ac', homeKitSwitches: ['fanQuiet', 'vertical3'] }],
+    });
+    update({ [AC_FAN_SPEED]: AuxFanSpeed.LOW, [AC_SWING_VERTICAL]: 0 });
+    await getSwitch('fanQuiet')?.handleSetRequest(true);
+    expect(startDeviceCommand).toHaveBeenLastCalledWith(expect.anything(), { [AC_FAN_SPEED]: AuxFanSpeed.MUTE });
+    await getSwitch('vertical3')?.handleSetRequest(true);
+    expect(startDeviceCommand).toHaveBeenLastCalledWith(expect.anything(), { [AC_SWING_VERTICAL]: 3 });
   });
 
   test('reports AUX Home ambient temperature in HAP Celsius even when display units are Fahrenheit', async () => {

@@ -53,6 +53,7 @@ export interface AuxDevice extends AuxDeviceSummary {
   params: Record<string, number>;
   state: number;
   lastUpdated?: string;
+  ambientObservedAt?: number | null;
 }
 
 interface AuxCloudClientOptions {

@@ -40,6 +40,7 @@ import {
 } from './api/constants';
 import type { AuxDevice } from './api/AuxCloudClient';
 import type { AuxCloudPlatform, FeatureSwitchKey } from './platform';
+import type { AuxCloudPlatformConfig, HomeKitSwitchKey } from './types';
 
 interface AuxCloudAccessoryContext {
   device?: {
@@ -56,6 +57,20 @@ const LEGACY_AMBIENT_FALLBACK_C = 24;
 const CURRENT_TEMPERATURE_MIN_C = -40;
 const CURRENT_TEMPERATURE_MAX_C = 60;
 const FAN_ROTATION_STEP = 20;
+
+const AUX_HOME_CONTROL_SWITCHES = [
+  { key: 'fanTurbo', label: 'Turbo Fan', param: AC_FAN_SPEED, on: AuxFanSpeed.TURBO, off: AuxFanSpeed.AUTO },
+  { key: 'fanQuiet', label: 'Quiet Fan', param: AC_FAN_SPEED, on: AuxFanSpeed.MUTE, off: AuxFanSpeed.AUTO },
+  { key: 'horizontalSwing', label: 'Horizontal Swing', param: AC_SWING_HORIZONTAL, on: 0, off: 1 },
+  { key: 'verticalSwing', label: 'Vertical Swing', param: AC_SWING_VERTICAL, on: 0, off: 1 },
+  ...([1, 2, 3, 4, 5] as const).map((position) => ({
+    key: `vertical${position}` as const,
+    label: `Vertical Position ${position}`,
+    param: AC_SWING_VERTICAL,
+    on: position,
+    off: 0,
+  })),
+] satisfies Array<{ key: HomeKitSwitchKey; label: string; param: string; on: number; off: number }>;
 
 type FanSpeedLevelId = 'comfortable' | 'mute' | 'low' | 'medium' | 'high' | 'turbo';
 
@@ -135,7 +150,7 @@ const FEATURE_SWITCH_CONFIG: Record<FeatureSwitchKey, FeatureSwitchDefinition> =
 };
 
 export class AuxCloudPlatformAccessory {
-  private readonly service: Service;
+  private service: Service;
 
   private readonly temperatureUnit: 'C' | 'F';
 
@@ -171,6 +186,12 @@ export class AuxCloudPlatformAccessory {
 
   private pendingTempScaled?: number;
 
+  private deviceOptions?: NonNullable<AuxCloudPlatformConfig['devices']>[number];
+
+  private ambientReading?: { celsius: number; observedAt: number };
+
+  private ambientSensor?: Service;
+
   constructor(
     private readonly platform: AuxCloudPlatform,
     private readonly accessory: PlatformAccessory,
@@ -190,7 +211,8 @@ export class AuxCloudPlatformAccessory {
         this.getContext().device?.endpointId ?? 'unknown',
       );
 
-    this.service = this.accessory.getService(this.platform.Service.HeaterCooler)
+    this.service = this.accessory.getService(this.platform.Service.Thermostat)
+      ?? this.accessory.getService(this.platform.Service.HeaterCooler)
       ?? this.accessory.addService(this.platform.Service.HeaterCooler);
 
     this.service.setCharacteristic(this.platform.Characteristic.Name, this.accessory.displayName);
@@ -200,6 +222,15 @@ export class AuxCloudPlatformAccessory {
 
   updateAccessory(device: AuxDevice): void {
     this.device = device;
+    const mappings = this.platform.config?.devices;
+    this.deviceOptions = mappings?.find(({ endpointId }) => endpointId === device.endpointId)
+      ?? mappings?.find(({ mac }) => mac && mac.toLowerCase() === device.mac?.toLowerCase());
+    const ambient = this.getCelsiusParam(AC_TEMPERATURE_AMBIENT);
+    if (ambient !== undefined && Number.isFinite(ambient)
+      && ambient >= CURRENT_TEMPERATURE_MIN_C && ambient <= CURRENT_TEMPERATURE_MAX_C
+      && device.ambientObservedAt !== null) {
+      this.ambientReading = { celsius: ambient, observedAt: device.ambientObservedAt ?? Date.now() };
+    }
     this.platform.updateCachedDevice(device);
 
     const context = this.getContext();
@@ -220,6 +251,14 @@ export class AuxCloudPlatformAccessory {
       device.endpointId,
     );
 
+    const serviceType = this.deviceOptions?.homeKitService === 'thermostat'
+      ? this.platform.Service.Thermostat : this.platform.Service.HeaterCooler;
+    if (this.service.UUID !== serviceType.UUID) {
+      this.accessory.removeService(this.service);
+      this.service = this.accessory.getService(serviceType) ?? this.accessory.addService(serviceType, device.friendlyName);
+      this.service.setPrimaryService(true);
+      this.configureBaseCharacteristics();
+    }
     this.service.updateCharacteristic(this.platform.Characteristic.Name, device.friendlyName);
     this.service.updateCharacteristic(
       this.platform.Characteristic.TemperatureDisplayUnits,
@@ -242,11 +281,89 @@ export class AuxCloudPlatformAccessory {
     this.configureSwingCharacteristic();
     this.configureFeatureSwitches();
     this.configureModeSwitches();
+    this.configureAuxHomeControlSwitches();
+    this.configureAmbientSensor();
 
     this.updateCharacteristicsFromDevice();
   }
 
   private configureBaseCharacteristics(): void {
+    const currentTemperatureUnit = this.isThermostat || this.platform.providerKind === 'aux-home' ? 'C' : this.temperatureUnit;
+    const currentTemperatureMin = celsiusToDisplay(CURRENT_TEMPERATURE_MIN_C, currentTemperatureUnit);
+    const currentTemperatureMax = celsiusToDisplay(CURRENT_TEMPERATURE_MAX_C, currentTemperatureUnit);
+
+    this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+      .setProps({
+        minValue: Math.min(currentTemperatureMin, currentTemperatureMax),
+        maxValue: Math.max(currentTemperatureMin, currentTemperatureMax),
+        minStep: 0.1,
+      })
+      .onGet(() => {
+        const temperature = this.getCurrentTemperature();
+        if (temperature instanceof Error) {
+          throw temperature;
+        }
+        return temperature;
+      });
+
+    if (this.isThermostat) {
+      this.configureThermostatCharacteristics();
+    } else {
+      this.configureHeaterCoolerCharacteristics();
+    }
+    const { StatusFault } = this.platform.Characteristic;
+    if (!this.service.testCharacteristic(StatusFault)) {
+      this.service.addCharacteristic(StatusFault);
+    }
+    this.service.updateCharacteristic(StatusFault, StatusFault.NO_FAULT);
+  }
+
+  private get isThermostat(): boolean {
+    return this.service.UUID === this.platform.Service.Thermostat.UUID;
+  }
+
+  private configureThermostatCharacteristics(): void {
+    const { Active, CurrentHeatingCoolingState, TargetHeatingCoolingState, TargetTemperature, TargetHeaterCoolerState } =
+      this.platform.Characteristic;
+    this.service.getCharacteristic(CurrentHeatingCoolingState).onGet(() => this.getThermostatCurrentState());
+    this.service.getCharacteristic(TargetHeatingCoolingState)
+      .onGet(() => this.getThermostatTargetState())
+      .onSet(async (value) => {
+        if (value === TargetHeatingCoolingState.OFF) {
+          await this.handleActiveSet(Active.INACTIVE);
+        } else {
+          const mode = value === TargetHeatingCoolingState.HEAT ? TargetHeaterCoolerState.HEAT
+            : value === TargetHeatingCoolingState.COOL ? TargetHeaterCoolerState.COOL : TargetHeaterCoolerState.AUTO;
+          await this.handleTargetStateSet(mode);
+        }
+      });
+    this.service.getCharacteristic(TargetTemperature)
+      .setProps({ minValue: MIN_TARGET_TEMPERATURE_C, maxValue: MAX_TARGET_TEMPERATURE_C, minStep: this.temperatureStep })
+      .onGet(() => this.getThermostatTargetTemperature())
+      .onSet((value) => this.handleTargetTemperatureSet(value));
+  }
+
+  private getThermostatCurrentState(): number {
+    const { CurrentHeatingCoolingState: state, CurrentHeaterCoolerState: hvac } = this.platform.Characteristic;
+    const current = this.handleCurrentHeaterCoolerStateGet();
+    return current === hvac.HEATING ? state.HEAT : current === hvac.COOLING ? state.COOL : state.OFF;
+  }
+
+  private getThermostatTargetState(): number {
+    const { TargetHeatingCoolingState: state, TargetHeaterCoolerState: hvac } = this.platform.Characteristic;
+    if (!this.isDevicePowered()) {
+      return state.OFF;
+    }
+    const target = this.handleTargetStateGet();
+    return target === hvac.HEAT ? state.HEAT : target === hvac.COOL ? state.COOL : state.AUTO;
+  }
+
+  private getThermostatTargetTemperature(): number {
+    return clamp(this.getCelsiusParam(AC_TEMPERATURE_TARGET) ?? DEFAULT_TARGET_TEMPERATURE_C,
+      MIN_TARGET_TEMPERATURE_C, MAX_TARGET_TEMPERATURE_C);
+  }
+
+  private configureHeaterCoolerCharacteristics(): void {
     this.service.getCharacteristic(this.platform.Characteristic.Active)
       .onSet(this.handleActiveSet.bind(this))
       .onGet(this.handleActiveGet.bind(this));
@@ -264,24 +381,6 @@ export class AuxCloudPlatformAccessory {
 
     this.service.getCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState)
       .onGet(this.handleCurrentHeaterCoolerStateGet.bind(this));
-
-    const currentTemperatureUnit = this.platform.providerKind === 'aux-home' ? 'C' : this.temperatureUnit;
-    const currentTemperatureMin = celsiusToDisplay(CURRENT_TEMPERATURE_MIN_C, currentTemperatureUnit);
-    const currentTemperatureMax = celsiusToDisplay(CURRENT_TEMPERATURE_MAX_C, currentTemperatureUnit);
-
-    this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
-      .setProps({
-        minValue: Math.min(currentTemperatureMin, currentTemperatureMax),
-        maxValue: Math.max(currentTemperatureMin, currentTemperatureMax),
-        minStep: 0.1,
-      })
-      .onGet(() => {
-        const temperature = this.getCurrentTemperature();
-        if (temperature instanceof Error) {
-          throw temperature;
-        }
-        return temperature;
-      });
 
     this.service.getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature)
       .setProps({
@@ -301,16 +400,12 @@ export class AuxCloudPlatformAccessory {
       .onSet(this.handleTargetTemperatureSet.bind(this))
       .onGet(this.handleTargetTemperatureGet.bind(this));
 
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.StatusFault,
-      this.platform.Characteristic.StatusFault.NO_FAULT,
-    );
   }
 
   private configureFanCharacteristic(): void {
     const existing = this.findCharacteristic(this.platform.Characteristic.RotationSpeed.UUID);
 
-    if (this.supportsFanSpeed) {
+    if (this.supportsFanSpeed && !this.isThermostat) {
       const characteristic = existing ?? this.service.addCharacteristic(this.platform.Characteristic.RotationSpeed);
       const levels = this.getFanLevels();
       const minValue = levels[0]?.percent ?? 0;
@@ -323,20 +418,18 @@ export class AuxCloudPlatformAccessory {
   }
 
   private configureFanAutoSwitch(): void {
-    if (!this.supportsFanSpeed) {
-      if (this.fanAutoService) {
-        this.accessory.removeService(this.fanAutoService);
-        this.fanAutoService = undefined;
+    const existing = this.fanAutoService ?? this.accessory.getServiceById(this.platform.Service.Switch, 'fanAuto');
+    if (!this.supportsFanSpeed || this.deviceOptions?.homeKitSwitches?.includes('fanAuto') === false) {
+      if (existing) {
+        this.accessory.removeService(existing);
       }
+      this.fanAutoService = undefined;
       return;
     }
 
-    const service =
-      this.fanAutoService
-        ?? this.accessory.getServiceById(this.platform.Service.Switch, 'fanAuto')
-        ?? this.accessory.addService(this.platform.Service.Switch, 'Auto Fan', 'fanAuto');
+    const service = existing ?? this.accessory.addService(this.platform.Service.Switch, 'Auto Fan', 'fanAuto');
 
-    this.setSwitchName(service, 'Auto Fan');
+    this.setServiceName(service, 'Auto Fan');
     service.getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.handleFanAutoSet.bind(this))
       .onGet(() => this.handleFanAutoGet());
@@ -346,7 +439,7 @@ export class AuxCloudPlatformAccessory {
 
   private configureSwingCharacteristic(): void {
     const existing = this.findCharacteristic(this.platform.Characteristic.SwingMode.UUID);
-    const shouldExpose = this.supportsSwingVertical || this.supportsSwingHorizontal;
+    const shouldExpose = !this.isThermostat && (this.supportsSwingVertical || this.supportsSwingHorizontal);
 
     if (shouldExpose) {
       const characteristic = existing ?? this.service.addCharacteristic(this.platform.Characteristic.SwingMode);
@@ -365,15 +458,14 @@ export class AuxCloudPlatformAccessory {
     (Object.keys(FEATURE_SWITCH_CONFIG) as FeatureSwitchKey[]).forEach((feature) => {
       const definition = FEATURE_SWITCH_CONFIG[feature];
       const supported = typeof this.device?.params[definition.param] === 'number';
-      const shouldExpose = this.featureSwitches.has(feature) && supported;
-      const existing = this.featureSwitchServices.get(feature);
+      const shouldExpose = (this.deviceOptions?.homeKitSwitches?.includes(feature) ?? this.featureSwitches.has(feature)) && supported;
+      const existing = this.featureSwitchServices.get(feature)
+        ?? this.accessory.getServiceById(this.platform.Service.Switch, feature);
 
       if (shouldExpose) {
-        const service = existing
-          ?? this.accessory.getServiceById(this.platform.Service.Switch, feature)
-          ?? this.accessory.addService(this.platform.Service.Switch, definition.label, feature);
+        const service = existing ?? this.accessory.addService(this.platform.Service.Switch, definition.label, feature);
 
-        this.setSwitchName(service, definition.label);
+        this.setServiceName(service, definition.label);
         service.getCharacteristic(this.platform.Characteristic.On)
           .onSet(async (value) => {
             await this.handleFeatureSwitchSet(feature, Boolean(value));
@@ -395,27 +487,64 @@ export class AuxCloudPlatformAccessory {
     ];
 
     for (const definition of definitions) {
-      const existing =
-        this.modeSwitchServices.get(definition.key)
-          ?? this.accessory.getServiceById(this.platform.Service.Switch, definition.key)
-          ?? this.accessory.addService(this.platform.Service.Switch, definition.label, definition.key);
+      const existing = this.modeSwitchServices.get(definition.key)
+        ?? this.accessory.getServiceById(this.platform.Service.Switch, definition.key);
+      if (this.deviceOptions?.homeKitSwitches?.includes(definition.key) === false) {
+        if (existing) {
+          this.accessory.removeService(existing);
+        }
+        this.modeSwitchServices.delete(definition.key);
+        continue;
+      }
 
-      this.setSwitchName(existing, definition.label);
-      existing.getCharacteristic(this.platform.Characteristic.On)
+      const service = existing ?? this.accessory.addService(this.platform.Service.Switch, definition.label, definition.key);
+      this.setServiceName(service, definition.label);
+      service.getCharacteristic(this.platform.Characteristic.On)
         .onSet(async (value) => {
           await this.handleModeSwitchSet(definition.key, Boolean(value), definition.auxMode);
         })
         .onGet(() => this.getAuxMode() === definition.auxMode);
 
-      this.modeSwitchServices.set(definition.key, existing);
+      this.modeSwitchServices.set(definition.key, service);
     }
   }
 
-  private setSwitchName(service: Service, label: string): void {
+  private configureAuxHomeControlSwitches(): void {
+    const { Characteristic, Service } = this.platform;
+    for (const { key, label, param, on, off } of AUX_HOME_CONTROL_SWITCHES) {
+      const existing = this.accessory.getServiceById(Service.Switch, key);
+      if (this.platform.providerKind !== 'aux-home' || !this.deviceOptions?.homeKitSwitches?.includes(key)
+        || typeof this.device?.params[param] !== 'number') {
+        if (existing) {
+          this.accessory.removeService(existing);
+        }
+        continue;
+      }
+
+      const service = existing ?? this.accessory.addService(Service.Switch, label, key);
+      this.setServiceName(service, label);
+      service.getCharacteristic(Characteristic.On)
+        .onGet(() => this.device?.params[param] === on)
+        .onSet((enabled) => {
+          const device = this.device;
+          const next = enabled ? on : off;
+          if (!device || device.params[param] === next || (!enabled && device.params[param] !== on)) {
+            return;
+          }
+          device.params[param] = next;
+          this.platform.updateCachedDevice(device);
+          this.updateCharacteristicsFromDevice();
+          this.setupPendingGuard();
+          this.platform.startDeviceCommand(device, { [param]: next });
+        });
+    }
+  }
+
+  private setServiceName(service: Service, label: string): void {
     const { Name, ConfiguredName } = this.platform.Characteristic;
     service.updateCharacteristic(Name, label);
     if (!service.testCharacteristic(ConfiguredName)) {
-      service.setCharacteristic(ConfiguredName, label);
+      service.addCharacteristic(ConfiguredName).updateValue(label);
     }
   }
 
@@ -570,18 +699,50 @@ export class AuxCloudPlatformAccessory {
     }
   }
 
-  private getCurrentTemperature(): number | Error {
-    const celsius = this.getCelsiusParam(AC_TEMPERATURE_AMBIENT);
-    if (this.platform.providerKind === 'aux-home') {
-      if (celsius === undefined || !Number.isFinite(celsius)
-        || celsius < CURRENT_TEMPERATURE_MIN_C || celsius > CURRENT_TEMPERATURE_MAX_C) {
-        const { HapStatusError, HAPStatus } = this.platform.api.hap;
-        return new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  private configureAmbientSensor(): void {
+    const { Characteristic, Service } = this.platform;
+    const existing = this.ambientSensor ?? this.accessory.getServiceById(Service.TemperatureSensor, 'ambientTemperature');
+    if (!this.deviceOptions?.ambientTemperatureSensor) {
+      if (existing) {
+        this.accessory.removeService(existing);
       }
-      // HAP CurrentTemperature is expressed in Celsius, regardless of display units.
-      return roundToOneDecimal(celsius);
+      this.ambientSensor = undefined;
+      return;
     }
 
+    if (!this.ambientSensor) {
+      const label = 'Room Temperature';
+      this.ambientSensor = existing ?? this.accessory.addService(Service.TemperatureSensor, label, 'ambientTemperature');
+      this.setServiceName(this.ambientSensor, label);
+      this.ambientSensor.getCharacteristic(Characteristic.CurrentTemperature)
+        .setProps({ minValue: CURRENT_TEMPERATURE_MIN_C, maxValue: CURRENT_TEMPERATURE_MAX_C, minStep: 0.1 })
+        .onGet(() => {
+          const temperature = this.getMeasuredTemperature();
+          if (temperature instanceof Error) {
+            throw temperature;
+          }
+          return temperature;
+        });
+    }
+    this.ambientSensor.getCharacteristic(Characteristic.CurrentTemperature).updateValue(this.getMeasuredTemperature());
+  }
+
+  private getMeasuredTemperature(): number | Error {
+    const configured = this.platform.config?.pollInterval;
+    const interval = (configured && configured >= 15 ? Math.min(configured, 600) : 30) * 1000;
+    const reading = this.ambientReading;
+    if (reading && Date.now() - reading.observedAt <= 2 * interval) {
+      return roundToOneDecimal(reading.celsius);
+    }
+    const { HapStatusError, HAPStatus } = this.platform.api.hap;
+    return new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  }
+
+  private getCurrentTemperature(): number | Error {
+    if (this.platform.providerKind === 'aux-home' || this.isThermostat) {
+      return this.getMeasuredTemperature();
+    }
+    const celsius = this.getCelsiusParam(AC_TEMPERATURE_AMBIENT);
     return roundToOneDecimal(celsiusToDisplay(celsius ?? LEGACY_AMBIENT_FALLBACK_C, this.temperatureUnit));
   }
 
@@ -592,7 +753,8 @@ export class AuxCloudPlatformAccessory {
 
     const requestedDisplay = Number(value);
     const clampedDisplay = this.clampDisplayTemperature(requestedDisplay);
-    const celsius = displayToCelsius(clampedDisplay, this.temperatureUnit);
+    const celsius = this.isThermostat ? clamp(requestedDisplay, MIN_TARGET_TEMPERATURE_C, MAX_TARGET_TEMPERATURE_C)
+      : displayToCelsius(clampedDisplay, this.temperatureUnit);
     const scaled = Math.round(celsius * 10);
 
     // Aplicar estado optimista inmediatamente
@@ -1089,44 +1251,51 @@ export class AuxCloudPlatformAccessory {
 
     const auxMode = this.getAuxMode();
 
-    this.service.updateCharacteristic(this.platform.Characteristic.Active, this.handleActiveGet());
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.TargetHeaterCoolerState,
-      this.handleTargetStateGet(),
-    );
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.CurrentHeaterCoolerState,
-      this.handleCurrentHeaterCoolerStateGet(),
-    );
-    this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
-      .updateValue(this.getCurrentTemperature());
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.HeatingThresholdTemperature,
-      this.handleTargetTemperatureGet(),
-    );
-    this.service.updateCharacteristic(
-      this.platform.Characteristic.CoolingThresholdTemperature,
-      this.handleTargetTemperatureGet(),
-    );
+    const { Characteristic } = this.platform;
+    this.service.getCharacteristic(Characteristic.CurrentTemperature).updateValue(this.getCurrentTemperature());
+    if (this.isThermostat) {
+      this.service.updateCharacteristic(Characteristic.CurrentHeatingCoolingState, this.getThermostatCurrentState());
+      this.service.updateCharacteristic(Characteristic.TargetHeatingCoolingState, this.getThermostatTargetState());
+      this.service.updateCharacteristic(Characteristic.TargetTemperature, this.getThermostatTargetTemperature());
+    } else {
+      this.service.updateCharacteristic(this.platform.Characteristic.Active, this.handleActiveGet());
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.TargetHeaterCoolerState,
+        this.handleTargetStateGet(),
+      );
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.CurrentHeaterCoolerState,
+        this.handleCurrentHeaterCoolerStateGet(),
+      );
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.HeatingThresholdTemperature,
+        this.handleTargetTemperatureGet(),
+      );
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.CoolingThresholdTemperature,
+        this.handleTargetTemperatureGet(),
+      );
 
-    if (this.supportsFanSpeed) {
+    }
+
+    if (this.supportsFanSpeed && !this.isThermostat) {
       this.service.updateCharacteristic(
         this.platform.Characteristic.RotationSpeed,
         this.handleRotationSpeedGet(),
       );
-      if (this.fanAutoService) {
-        this.fanAutoService.updateCharacteristic(
-          this.platform.Characteristic.On,
-          this.handleFanAutoGet(),
-        );
-      }
     }
+    this.fanAutoService?.updateCharacteristic(Characteristic.On, this.handleFanAutoGet());
 
-    if (this.supportsSwingHorizontal || this.supportsSwingVertical) {
+    if (!this.isThermostat && (this.supportsSwingHorizontal || this.supportsSwingVertical)) {
       this.service.updateCharacteristic(
         this.platform.Characteristic.SwingMode,
         this.handleSwingModeGet(),
       );
+    }
+
+    for (const { key, param, on } of AUX_HOME_CONTROL_SWITCHES) {
+      this.accessory.getServiceById(this.platform.Service.Switch, key)
+        ?.updateCharacteristic(Characteristic.On, this.device.params[param] === on);
     }
 
     for (const [mode, service] of this.modeSwitchServices.entries()) {

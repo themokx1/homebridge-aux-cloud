@@ -150,6 +150,7 @@ describe('AuxHomeProvider', () => {
       params: { pwr: 0, temp: 240, ac_mode: 1, ac_mark: 0 },
       state: 1,
       lastUpdated: '2026-08-13T10:00:00.000Z',
+      ambientObservedAt: null,
     });
     expect(JSON.stringify(device)).not.toContain('never-normalize');
   });
@@ -170,6 +171,27 @@ describe('AuxHomeProvider', () => {
 
     expect(devices.map((device) => device.endpointId)).toEqual([DEVICE_ID]);
     expect(mqtt.connect).toHaveBeenCalledWith([{ did: DEVICE_ID }]);
+  });
+
+  test('requests live state on connect and reconciles REST state during an MQTT outage', async () => {
+    const { mqtt, provider, restClient } = setup();
+    await provider.ensureLoggedIn('synthetic-account', 'synthetic-password');
+    await provider.listDevices();
+    expect(mqtt.publish).not.toHaveBeenCalled();
+
+    mqtt.emitConnected();
+    expect(mqtt.publish).toHaveBeenLastCalledWith(DEVICE_ID, STATE_QUERY);
+    mqtt.emit(POWER_ON_25C);
+
+    mqtt.connected = false;
+    restClient.listDevices.mockResolvedValue([deviceRecord({ status: { temp: 180, pwr: 0 } })]);
+    const [duringOutage] = await provider.listDevices();
+    expect(duringOutage.params).toMatchObject({ temp: 180, pwr: 0 });
+
+    mqtt.emitConnected();
+    expect(mqtt.publish).toHaveBeenCalledTimes(2);
+    const [afterReconnect] = await provider.listDevices();
+    expect(afterReconnect.params).toMatchObject({ temp: 180, pwr: 0 });
   });
 
   test('publishes a complete 25-byte command and resolves only after matching pushed state', async () => {
@@ -427,7 +449,8 @@ describe('AuxHomeProvider', () => {
     expect(await commandResult).toBeUndefined();
     expect(restClient.login).toHaveBeenCalledTimes(2);
     expect(mqttSessionFactory).toHaveBeenCalledTimes(2);
-    expect(mqttTwo.publish).toHaveBeenCalledTimes(1);
+    expect(mqttTwo.publish).toHaveBeenCalledTimes(2);
+    expect(mqttTwo.publish).toHaveBeenNthCalledWith(1, DEVICE_ID, STATE_QUERY);
   });
 
   test('allows one later recovery only after the replacement connects and resumes pushes', async () => {
