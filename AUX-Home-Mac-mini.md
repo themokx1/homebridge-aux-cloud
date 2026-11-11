@@ -34,7 +34,7 @@ scp homebridge-aux-cloud-0.0.14-beta.1.ambient-{fix,diagnostics}.tgz macmini@MAC
 
 **MAC MININ**, a meglévő Homebridge-felhasználó termináljában. Először tölts le egy Homebridge-mentést a UI **Backup / Restore** menüjéből. A plugin könyvtárát is külön mentjük, így a két helyileg módosított `dist` fájl és a `.bak` fájlok visszaállíthatók.
 
-A parancsok a meglévő `hb-service` telepítést használják. Ha a szolgáltatást más módszerrel indítod, a saját stop/start parancsaiddal végezd a leállítást és az indítást. A mentési könyvtár létrehozása meglévő azonos nevű mentés esetén megáll.
+A parancsok a meglévő `hb-service` telepítést használják. MacOS-en a szolgáltatás leállítása és indítása `sudo`-t igényel. Az npm-telepítés a meglévő nvm-felhasználóként fut. Ha a szolgáltatást más módszerrel indítod, a saját stop/start parancsaiddal végezd a leállítást és az indítást. A mentési könyvtár létrehozása meglévő azonos nevű mentés esetén megáll.
 
 SSH-n vagy a Mac mini saját Terminal alkalmazásában illeszd be a teljes blokkot. A Homebridge webes terminál kapcsolata megszakadhat a szolgáltatás leállításakor. Ha a GitHub-ágból készített csomagot használod, a `variant=ambient-diagnostics` sort cseréld `variant=ambient-fix` értékre.
 
@@ -56,14 +56,14 @@ SSH-n vagy a Mac mini saját Terminal alkalmazásában illeszd be a teljes blokk
   test "$(node -p 'require(process.argv[1]).version' "$plugin/package.json")" = 0.0.14-beta.1
   mkdir -m 700 "$backup"
   ditto "$plugin" "$backup/homebridge-aux-cloud"
-  hb-service stop
+  sudo env "PATH=$PATH" "$(command -v hb-service)" stop
   npm install -g --omit=peer --ignore-scripts "$tgz"
   test "$(node -p 'require(process.argv[1]).version' "$plugin/package.json")" = "0.0.14-beta.1.$variant"
-  hb-service start
+  sudo env "PATH=$PATH" "$(command -v hb-service)" start
 )
 ```
 
-A child bridge beállításai, a Homebridge `persist` és `accessories` könyvtára, valamint a platformkonfiguráció a helyén marad. A javítás ugyanazokat a szolgáltatásokat és UUID-ket használja. Ha a telepítés az újraindítás előtt hibával megáll, használd a visszaállítást.
+A child bridge beállításai, a Homebridge `persist` és `accessories` könyvtára, valamint a platformkonfiguráció a helyén marad. A javítás ugyanazokat a szolgáltatásokat és UUID-ket használja. Ha az npm-telepítés megkezdése előtt állt meg a blokk, az eredeti plugin indítható a Mac mini SSH-ablakában a `sudo hb-service start` paranccsal. Ha a telepítés megkezdődött és hibával állt meg, használd a visszaállítást. A blokk változói, köztük a `$tgz`, csak a blokkon belül érhetők el.
 
 ## 3. Élő próba és szűrt kimenet
 
@@ -91,10 +91,10 @@ A próba a Homebridge szokásos AUX Home-munkamenetéből gyűjt. Ha bejelentkez
   test "$(node -v)" = v22.18.0
   tgz="$HOME/Downloads/homebridge-aux-cloud-0.0.14-beta.1.ambient-fix.tgz"
   test -f "$tgz"
-  hb-service stop
+  sudo env "PATH=$PATH" "$(command -v hb-service)" stop
   npm install -g --omit=peer --ignore-scripts "$tgz"
   test "$(node -p 'require(process.argv[1]).version' "$(npm root -g)/homebridge-aux-cloud/package.json")" = 0.0.14-beta.1.ambient-fix
-  hb-service start
+  sudo env "PATH=$PATH" "$(command -v hb-service)" start
 )
 ```
 
@@ -112,10 +112,10 @@ A próba a Homebridge szokásos AUX Home-munkamenetéből gyűjt. Ha bejelentkez
   original="$backup/homebridge-aux-cloud"
   test "$(node -p 'require(process.argv[1]).version' "$original/package.json")" = 0.0.14-beta.1
   displaced="$(mktemp -d "$backup/displaced.XXXXXX")"
-  hb-service stop
+  sudo env "PATH=$PATH" "$(command -v hb-service)" stop
   if [ -d "$plugin" ]; then mv "$plugin" "$displaced/homebridge-aux-cloud"; fi
   ditto "$original" "$plugin"
-  hb-service start
+  sudo env "PATH=$PATH" "$(command -v hb-service)" start
 )
 ```
 
